@@ -1,0 +1,4 @@
+/tests
+/.mypy_cache
+/.pytest_cache
+/.claude

@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - FT_AWS_REGION=us-east-1
+      - FT_S3_BUCKET=finetuning-platform
+      - FT_DYNAMODB_JOBS_TABLE=finetuning-jobs
+      - FT_DYNAMODB_MODELS_TABLE=finetuned-models
+      - FT_SAGEMAKER_ROLE_ARN=arn:aws:iam::role/SageMakerRole
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    depends_on:
+      - localstack
+
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,dynamodb,sagemaker
