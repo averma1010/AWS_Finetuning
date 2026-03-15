@@ -2,12 +2,23 @@
 from typing import Optional
 import boto3
 import sys
+import os
+from pathlib import Path
+
+# Add parent directory to path to import app modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from app.config import get_settings
 
 REGION = "us-east-1"
 
 
 def create_tables(endpoint_url: Optional[str] = None):
-    kwargs = {"region_name": REGION}
+    settings = get_settings()
+    kwargs = {
+        "region_name": settings.aws_region,
+        "aws_access_key_id": settings.aws_access_key_id,
+        "aws_secret_access_key": settings.aws_secret_access_key
+    }
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
 
@@ -16,26 +27,26 @@ def create_tables(endpoint_url: Optional[str] = None):
     # Jobs table
     try:
         dynamodb.create_table(
-            TableName="finetuning-jobs",
+            TableName=settings.dynamodb_jobs_table,
             KeySchema=[{"AttributeName": "job_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "job_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        print("Created table: finetuning-jobs")
+        print(f"Created table: {settings.dynamodb_jobs_table}")
     except dynamodb.exceptions.ResourceInUseException:
-        print("Table finetuning-jobs already exists")
+        print(f"Table {settings.dynamodb_jobs_table} already exists")
 
     # Models table
     try:
         dynamodb.create_table(
-            TableName="finetuned-models",
+            TableName=settings.dynamodb_models_table,
             KeySchema=[{"AttributeName": "model_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "model_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        print("Created table: finetuned-models")
+        print(f"Created table: {settings.dynamodb_models_table}")
     except dynamodb.exceptions.ResourceInUseException:
-        print("Table finetuned-models already exists")
+        print(f"Table {settings.dynamodb_models_table} already exists")
 
 
 if __name__ == "__main__":

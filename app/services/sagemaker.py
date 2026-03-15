@@ -9,7 +9,12 @@ from app.services import s3 as s3_service
 
 def _get_client():
     settings = get_settings()
-    return boto3.client("sagemaker", region_name=settings.aws_region)
+    return boto3.client(
+        "sagemaker",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key
+    )
 
 
 def launch_training_job(
@@ -34,6 +39,8 @@ def launch_training_job(
     source_s3_uri = s3_service.upload_training_script(job_id, script_path)
 
     training_hyperparams = {
+        "sagemaker_program": script_name,
+        "sagemaker_submit_directory": source_s3_uri,
         "model_name": model_spec.hf_model_id,
         "learning_rate": str(hyperparams.get("learning_rate", 2e-4)),
         "num_epochs": str(hyperparams.get("num_epochs", 3)),
@@ -47,12 +54,17 @@ def launch_training_job(
 
     output_path = s3_service.get_model_artifact_path(job_id)
 
+    environment = {}
+    if settings.hf_token:
+        environment["HUGGING_FACE_HUB_TOKEN"] = settings.hf_token
+
     client.create_training_job(
         TrainingJobName=sagemaker_job_name,
         AlgorithmSpecification={
             "TrainingImage": _get_training_image(settings.aws_region),
             "TrainingInputMode": "File",
         },
+        Environment=environment,
         RoleArn=settings.sagemaker_role_arn,
         HyperParameters=training_hyperparams,
         InputDataConfig=[
@@ -180,7 +192,10 @@ def delete_endpoint(endpoint_name: str):
 def invoke_endpoint(endpoint_name: str, payload: dict) -> dict:
     settings = get_settings()
     runtime_client = boto3.client(
-        "sagemaker-runtime", region_name=settings.aws_region
+        "sagemaker-runtime",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key
     )
     body = json.dumps(payload)
     response = runtime_client.invoke_endpoint(
