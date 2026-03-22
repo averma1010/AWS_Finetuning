@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas.job import JobStatus, JobListResponse
 from app.services import dynamodb, sagemaker
+from app import telemetry
 
 router = APIRouter()
 
@@ -22,11 +24,17 @@ async def get_job_status(job_id: str):
                 updates["metrics"] = sm_status["metrics"]
             if "error" in sm_status:
                 updates["error"] = sm_status["error"]
+            if "progress" in sm_status:
+                updates["progress"] = sm_status["progress"]
 
-            # If completed, register the finetuned model
+            # If completed, register the finetuned model and record telemetry
             if sm_status["status"] == "completed" and "model_artifact_path" in sm_status:
                 updates["model_artifact_path"] = sm_status["model_artifact_path"]
                 _register_finetuned_model(job, sm_status["model_artifact_path"])
+                duration = _compute_duration_seconds(job)
+                telemetry.record_job_completed(job["base_model"], job["method"], duration)
+            elif sm_status["status"] == "failed":
+                telemetry.record_job_failed(job["base_model"], job["method"])
 
             job = dynamodb.update_job(job_id, updates)
         except Exception:
@@ -51,3 +59,12 @@ def _register_finetuned_model(job: dict, artifact_path: str):
         "base_model": job["base_model"],
         "s3_artifact_path": artifact_path,
     })
+
+
+def _compute_duration_seconds(job: dict) -> Optional[float]:
+    try:
+        created = datetime.fromisoformat(job["created_at"])
+        now = datetime.now(timezone.utc)
+        return (now - created).total_seconds()
+    except Exception:
+        return None

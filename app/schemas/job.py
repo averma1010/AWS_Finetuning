@@ -2,6 +2,13 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class TrainingProgress(BaseModel):
+    stage: str
+    stage_message: Optional[str] = None
+    current_epoch: Optional[float] = None
+    loss: Optional[float] = None
+
+
 class JobStatus(BaseModel):
     job_id: str
     user_id: str
@@ -14,6 +21,7 @@ class JobStatus(BaseModel):
     updated_at: str
     metrics: Optional[dict] = None
     error: Optional[str] = None
+    progress: Optional[TrainingProgress] = None
 
 
 class JobListResponse(BaseModel):

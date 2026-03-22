@@ -2,10 +2,29 @@
 import argparse
 import os
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 from peft import LoraConfig, get_peft_model
 from trl import SFTTrainer, SFTConfig
 import torch
+
+
+class SageMakerProgressCallback(TrainerCallback):
+    """Emits progress lines that SageMaker captures via MetricDefinitions regex."""
+
+    def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, logs=None, **kwargs):
+        if logs is None or not state.is_local_process_zero:
+            return
+        step = state.global_step
+        epoch = logs.get("epoch", state.epoch or 0)
+        loss = logs.get("loss")
+        lr = logs.get("learning_rate")
+        # SageMaker-parseable line (captured by MetricDefinitions regex)
+        parts = [f"[PROGRESS] step={step}", f"'epoch': {epoch:.4f}"]
+        if loss is not None:
+            parts.append(f"'loss': {loss:.6f}")
+        if lr is not None:
+            parts.append(f"'learning_rate': {lr:.2e}")
+        print(" ".join(parts), flush=True)
 
 
 def parse_args():
@@ -63,7 +82,25 @@ def main():
 
     # Determine formatting based on dataset columns
     if "messages" in dataset.column_names:
-        formatting_func = None  # SFTTrainer handles messages format natively
+        if tokenizer.chat_template is not None:
+            # Instruct model: apply_chat_template converts list-of-dicts to a plain string
+            def formatting_func(examples):
+                return [
+                    tokenizer.apply_chat_template(msgs, tokenize=False, add_generation_prompt=False)
+                    for msgs in examples["messages"]
+                ]
+        else:
+            # Base model without a chat template: concatenate role/content pairs manually
+            def formatting_func(examples):
+                texts = []
+                for msgs in examples["messages"]:
+                    parts = []
+                    for msg in msgs:
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+                        parts.append(f"### {role.capitalize()}:\n{content}")
+                    texts.append("\n\n".join(parts))
+                return texts
     else:
         def formatting_func(examples):
             texts = []
@@ -72,19 +109,20 @@ def main():
             return texts
 
     # Training config
+    max_seq_length = args.max_seq_length if args.max_seq_length > 0 else 2048
     training_args = SFTConfig(
         output_dir=args.model_dir,
         num_train_epochs=args.num_epochs,
         per_device_train_batch_size=args.batch_size,
         learning_rate=args.learning_rate,
-        max_seq_length=args.max_seq_length,
+        max_seq_length=max_seq_length,
         logging_steps=10,
         save_strategy="epoch",
         bf16=True,
         gradient_accumulation_steps=4,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
-        dataset_text_field="messages" if "messages" in dataset.column_names else None,
+        dataset_text_field=None,
     )
 
     trainer = SFTTrainer(
@@ -94,6 +132,7 @@ def main():
         formatting_func=formatting_func,
         args=training_args,
         tokenizer=tokenizer,
+        callbacks=[SageMakerProgressCallback()],
     )
 
     trainer.train()

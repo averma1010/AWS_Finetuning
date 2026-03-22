@@ -13,3 +13,7 @@ accelerate==1.2.1
 moto[s3,dynamodb]==5.0.27
 pytest==8.3.4
 httpx==0.28.1
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-instrumentation-fastapi>=0.41b0
+opentelemetry-exporter-otlp-proto-http>=1.20.0
