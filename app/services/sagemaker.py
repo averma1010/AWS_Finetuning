@@ -1,21 +1,33 @@
 import boto3
 import json
-import os
-from typing import Optional, Dict
+from typing import Optional
 from fastapi import HTTPException
+from sagemaker import Session as SageMakerSession
+from sagemaker.jumpstart.estimator import JumpStartEstimator
+from sagemaker.jumpstart.model import JumpStartModel
+from sagemaker.serverless import ServerlessInferenceConfig
+
 from app.config import get_settings
 from app.models.registry import get_model_spec
 from app.services import s3 as s3_service
 from app import telemetry
 
 
-def _get_client():
-    settings = get_settings()
+def _get_sagemaker_session(settings) -> SageMakerSession:
+    boto_session = boto3.Session(
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
+    return SageMakerSession(boto_session=boto_session)
+
+
+def _get_boto_client(settings):
     return boto3.client(
         "sagemaker",
         region_name=settings.aws_region,
         aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key
+        aws_secret_access_key=settings.aws_secret_access_key,
     )
 
 
@@ -49,78 +61,41 @@ def _launch_training_job_inner(
     instance_type: Optional[str] = None,
 ) -> str:
     settings = get_settings()
-    client = _get_client()
     model_spec = get_model_spec(base_model_key)
-
     resolved_instance_type = instance_type or model_spec.default_instance_type
-
-    # Upload the appropriate training script
-    script_dir = os.path.join(os.path.dirname(__file__), "..", "training_scripts")
-    script_name = "sft_train.py" if method == "sft" else "dpo_train.py"
-    script_path = os.path.abspath(os.path.join(script_dir, script_name))
-    source_s3_uri = s3_service.upload_training_script(job_id, script_path)
-
-    training_hyperparams = {
-        "sagemaker_program": script_name,
-        "sagemaker_submit_directory": source_s3_uri,
-        "model_name": model_spec.hf_model_id,
-        "learning_rate": str(hyperparams.get("learning_rate", 2e-4)),
-        "num_epochs": str(hyperparams.get("num_epochs", 3)),
-        "batch_size": str(hyperparams.get("batch_size", 4)),
-        "max_seq_length": str(hyperparams.get("max_seq_length", model_spec.max_seq_length)),
-        "lora_r": str(hyperparams.get("lora_r", model_spec.default_lora_r)),
-        "lora_alpha": str(hyperparams.get("lora_alpha", model_spec.default_lora_alpha)),
-    }
-    if method == "dpo":
-        training_hyperparams["beta"] = str(hyperparams.get("beta", 0.1))
-
     output_path = s3_service.get_model_artifact_path(job_id)
 
-    environment = {}
-    if settings.hf_token:
-        environment["HUGGING_FACE_HUB_TOKEN"] = settings.hf_token
+    sm_session = _get_sagemaker_session(settings)
 
-    client.create_training_job(
-        TrainingJobName=sagemaker_job_name,
-        AlgorithmSpecification={
-            "TrainingImage": _get_training_image(settings.aws_region),
-            "TrainingInputMode": "File",
-            "MetricDefinitions": [
-                {"Name": "train:loss", "Regex": r"'loss': ([0-9\.]+)"},
-                {"Name": "train:epoch", "Regex": r"'epoch': ([0-9\.]+)"},
-                {"Name": "train:learning_rate", "Regex": r"'learning_rate': ([0-9\.e\-]+)"},
-                {"Name": "train:step", "Regex": r"\[PROGRESS\] step=([0-9]+)"},
-            ],
+    estimator = JumpStartEstimator(
+        model_id=model_spec.jumpstart_model_id,
+        role=settings.sagemaker_role_arn,
+        instance_type=resolved_instance_type,
+        output_path=output_path,
+        sagemaker_session=sm_session,
+        hyperparameters={
+            "epoch": str(hyperparams.get("num_epochs", 3)),
+            "learning_rate": str(hyperparams.get("learning_rate", 2e-4)),
+            "per_device_train_batch_size": str(hyperparams.get("batch_size", 4)),
+            "max_input_length": str(hyperparams.get("max_seq_length", model_spec.max_seq_length)),
+            "lora_r": str(hyperparams.get("lora_r", model_spec.default_lora_r)),
+            "lora_alpha": str(hyperparams.get("lora_alpha", model_spec.default_lora_alpha)),
+            "instruction_tuned": "True",
         },
-        Environment=environment,
-        RoleArn=settings.sagemaker_role_arn,
-        HyperParameters=training_hyperparams,
-        InputDataConfig=[
-            {
-                "ChannelName": "training",
-                "DataSource": {
-                    "S3DataSource": {
-                        "S3DataType": "S3Prefix",
-                        "S3Uri": dataset_s3_uri,
-                        "S3DataDistributionType": "FullyReplicated",
-                    }
-                },
-            },
-        ],
-        OutputDataConfig={"S3OutputPath": output_path},
-        ResourceConfig={
-            "InstanceType": resolved_instance_type,
-            "InstanceCount": 1,
-            "VolumeSizeInGB": 100,
-        },
-        StoppingCondition={"MaxRuntimeInSeconds": 86400},
+    )
+
+    estimator.fit(
+        {"training": dataset_s3_uri},
+        job_name=sagemaker_job_name,
+        wait=False,
     )
 
     return sagemaker_job_name
 
 
 def get_training_job_status(sagemaker_job_name: str) -> dict:
-    client = _get_client()
+    settings = get_settings()
+    client = _get_boto_client(settings)
     response = client.describe_training_job(TrainingJobName=sagemaker_job_name)
 
     status_map = {
@@ -147,7 +122,6 @@ def get_training_job_status(sagemaker_job_name: str) -> dict:
     if response["TrainingJobStatus"] == "Completed":
         result["model_artifact_path"] = response["ModelArtifacts"]["S3ModelArtifacts"]
 
-    # Build progress from SecondaryStatus
     progress: dict = {"stage": response.get("SecondaryStatus", "Unknown")}
     transitions = response.get("SecondaryStatusTransitions", [])
     if transitions:
@@ -170,44 +144,24 @@ def create_endpoint(
     instance_count: int = 1,
 ) -> str:
     settings = get_settings()
-    client = _get_client()
     model_spec = get_model_spec(base_model_key)
     resolved_instance_type = instance_type or model_spec.default_instance_type
     endpoint_name = f"ft-{model_id}"
 
-    # Create model
-    model_name = f"ft-model-{model_id}"
-    client.create_model(
-        ModelName=model_name,
-        PrimaryContainer={
-            "Image": _get_inference_image(settings.aws_region),
-            "ModelDataUrl": model_artifact_path,
-            "Environment": {
-                "HF_MODEL_ID": model_spec.hf_model_id,
-                "HF_TASK": "text-generation",
-            },
-        },
-        ExecutionRoleArn=settings.sagemaker_role_arn,
+    sm_session = _get_sagemaker_session(settings)
+
+    model = JumpStartModel(
+        model_id=model_spec.jumpstart_model_id,
+        model_data=model_artifact_path,
+        role=settings.sagemaker_role_arn,
+        sagemaker_session=sm_session,
     )
 
-    # Create endpoint config
-    config_name = f"ft-config-{model_id}"
-    client.create_endpoint_config(
-        EndpointConfigName=config_name,
-        ProductionVariants=[
-            {
-                "VariantName": "primary",
-                "ModelName": model_name,
-                "InstanceType": resolved_instance_type,
-                "InitialInstanceCount": instance_count,
-            }
-        ],
-    )
-
-    # Create endpoint
-    client.create_endpoint(
-        EndpointName=endpoint_name,
-        EndpointConfigName=config_name,
+    model.deploy(
+        initial_instance_count=instance_count,
+        instance_type=resolved_instance_type,
+        endpoint_name=endpoint_name,
+        wait=False,
     )
 
     return endpoint_name
@@ -220,68 +174,45 @@ def create_serverless_endpoint(
     memory_size_mb: int = 4096,
     max_concurrency: int = 10,
 ) -> str:
-    """Create a serverless inference endpoint."""
     settings = get_settings()
-    client = _get_client()
     model_spec = get_model_spec(base_model_key)
     endpoint_name = f"ft-serverless-{model_id}"
 
-    # Create model (same as real-time)
-    model_name = f"ft-model-{model_id}"
-    client.create_model(
-        ModelName=model_name,
-        PrimaryContainer={
-            "Image": _get_inference_image(settings.aws_region),
-            "ModelDataUrl": model_artifact_path,
-            "Environment": {
-                "HF_MODEL_ID": model_spec.hf_model_id,
-                "HF_TASK": "text-generation",
-            },
-        },
-        ExecutionRoleArn=settings.sagemaker_role_arn,
+    sm_session = _get_sagemaker_session(settings)
+
+    model = JumpStartModel(
+        model_id=model_spec.jumpstart_model_id,
+        model_data=model_artifact_path,
+        role=settings.sagemaker_role_arn,
+        sagemaker_session=sm_session,
     )
 
-    # Create endpoint config with serverless configuration
-    config_name = f"ft-config-{model_id}"
-    client.create_endpoint_config(
-        EndpointConfigName=config_name,
-        ProductionVariants=[
-            {
-                "VariantName": "primary",
-                "ModelName": model_name,
-                "ServerlessConfig": {
-                    "MemorySizeInMB": memory_size_mb,
-                    "MaxConcurrency": max_concurrency,
-                },
-            }
-        ],
-    )
-
-    # Create endpoint
-    client.create_endpoint(
-        EndpointName=endpoint_name,
-        EndpointConfigName=config_name,
+    model.deploy(
+        serverless_inference_config=ServerlessInferenceConfig(
+            memory_size_in_mb=memory_size_mb,
+            max_concurrency=max_concurrency,
+        ),
+        endpoint_name=endpoint_name,
+        wait=False,
     )
 
     return endpoint_name
 
 
 def delete_endpoint(endpoint_name: str, endpoint_type: str = "real-time"):
-    """Delete endpoint (works for both real-time and serverless)."""
-    client = _get_client()
+    settings = get_settings()
+    client = _get_boto_client(settings)
     try:
         response = client.describe_endpoint(EndpointName=endpoint_name)
         config_name = response["EndpointConfigName"]
 
-        # Delete endpoint
         client.delete_endpoint(EndpointName=endpoint_name)
 
-        # Delete config and model
         config_response = client.describe_endpoint_config(EndpointConfigName=config_name)
         model_name = config_response["ProductionVariants"][0]["ModelName"]
         client.delete_endpoint_config(EndpointConfigName=config_name)
         client.delete_model(ModelName=model_name)
-    except client.exceptions.ClientError as e:
+    except client.exceptions.ClientError:
         raise
 
 
@@ -291,7 +222,7 @@ def invoke_endpoint(endpoint_name: str, payload: dict) -> dict:
         "sagemaker-runtime",
         region_name=settings.aws_region,
         aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key
+        aws_secret_access_key=settings.aws_secret_access_key,
     )
 
     try:
@@ -304,28 +235,7 @@ def invoke_endpoint(endpoint_name: str, payload: dict) -> dict:
         result = json.loads(response["Body"].read().decode("utf-8"))
         return result
     except runtime_client.exceptions.ModelNotReadyException:
-        # Serverless endpoints have cold starts
         raise HTTPException(
             status_code=503,
-            detail="Endpoint is warming up. Please retry in 10-30 seconds."
+            detail="Endpoint is warming up. Please retry in 10-30 seconds.",
         )
-
-
-def _get_training_image(region: str) -> str:
-    account_map = {
-        "us-east-1": "763104351884",
-        "us-west-2": "763104351884",
-        "eu-west-1": "763104351884",
-    }
-    account = account_map.get(region, "763104351884")
-    return f"{account}.dkr.ecr.{region}.amazonaws.com/huggingface-pytorch-training:2.1.0-transformers4.36.0-gpu-py310-cu121-ubuntu20.04"
-
-
-def _get_inference_image(region: str) -> str:
-    account_map = {
-        "us-east-1": "763104351884",
-        "us-west-2": "763104351884",
-        "eu-west-1": "763104351884",
-    }
-    account = account_map.get(region, "763104351884")
-    return f"{account}.dkr.ecr.{region}.amazonaws.com/huggingface-pytorch-inference:2.1.0-transformers4.37.0-gpu-py310-cu121-ubuntu22.04"

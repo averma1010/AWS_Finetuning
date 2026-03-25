@@ -1,7 +1,4 @@
 import boto3
-import io
-import os
-import tarfile
 from app.config import get_settings
 
 
@@ -26,28 +23,6 @@ def upload_dataset(dataset_id: str, file_content: bytes, filename: str) -> str:
     )
     return f"s3://{settings.s3_bucket}/{s3_key}"
 
-
-def upload_training_script(job_id: str, script_path: str) -> str:
-    settings = get_settings()
-    client = _get_client()
-    script_name = os.path.basename(script_path)
-    script_dir = os.path.dirname(script_path)
-    requirements_path = os.path.join(script_dir, "requirements.txt")
-    s3_key = f"scripts/{job_id}/sourcedir.tar.gz"
-
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        tar.add(script_path, arcname=script_name)
-        if os.path.exists(requirements_path):
-            tar.add(requirements_path, arcname="requirements.txt")
-    buf.seek(0)
-
-    client.put_object(
-        Bucket=settings.s3_bucket,
-        Key=s3_key,
-        Body=buf.read(),
-    )
-    return f"s3://{settings.s3_bucket}/{s3_key}"
 
 
 def get_dataset_s3_uri(dataset_id: str) -> str:

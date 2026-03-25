@@ -42,7 +42,7 @@ def validate_dataset(file_content: bytes) -> dict:
         if row_format is None:
             raise ValidationError(
                 f"Row {i + 1} does not match any supported format. "
-                "Expected: SFT (prompt+completion or messages) or DPO (prompt+chosen+rejected)",
+                "Expected: SFT with prompt+completion or messages array",
                 row=i + 1,
             )
 
@@ -58,8 +58,6 @@ def validate_dataset(file_content: bytes) -> dict:
 
 
 def _detect_row_format(row: dict) -> Optional[str]:
-    if "prompt" in row and "chosen" in row and "rejected" in row:
-        return "dpo"
     if "messages" in row and isinstance(row["messages"], list):
         for msg in row["messages"]:
             if not isinstance(msg, dict) or "role" not in msg or "content" not in msg:

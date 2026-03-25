@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     dynamodb_jobs_table: str = "finetuning-jobs"
     dynamodb_models_table: str = "finetuned-models"
     sagemaker_role_arn: str = ""
-    hf_token: str = ""
     max_dataset_size_mb: int = 500
     min_dataset_rows: int = 10
     default_instance_type: str = "ml.g5.xlarge"

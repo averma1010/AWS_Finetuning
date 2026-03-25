@@ -4,33 +4,33 @@ from typing import Optional, List, Dict
 
 @dataclass
 class BaseModelSpec:
-    hf_model_id: str
+    jumpstart_model_id: str
     display_name: str
     default_instance_type: str
-    supported_methods: List[str] = field(default_factory=lambda: ["sft", "dpo"])
+    supported_methods: List[str] = field(default_factory=lambda: ["sft"])
     max_seq_length: int = 2048
-    default_lora_r: int = 16
-    default_lora_alpha: int = 32
+    default_lora_r: int = 64
+    default_lora_alpha: int = 16
 
 
 CURATED_MODELS: Dict[str, BaseModelSpec] = {
-    "llama-3.2-1b": BaseModelSpec(
-        hf_model_id="meta-llama/Llama-3.2-1B",
+    "mistral-7b-instruct": BaseModelSpec(
+        jumpstart_model_id="mistral-7b-instruct-v0-2",
+        display_name="Mistral 7B Instruct v0.2",
+        default_instance_type="ml.g5.2xlarge",
+        max_seq_length=8192,
+    ),
+    "llama-3-2-1b": BaseModelSpec(
+        jumpstart_model_id="meta-textgeneration-llama-3-2-1b",
         display_name="Llama 3.2 1B",
         default_instance_type="ml.g5.xlarge",
         max_seq_length=4096,
     ),
-    "llama-3.2-3b": BaseModelSpec(
-        hf_model_id="meta-llama/Llama-3.2-3B",
+    "llama-3-2-3b": BaseModelSpec(
+        jumpstart_model_id="meta-textgeneration-llama-3-2-3b",
         display_name="Llama 3.2 3B",
         default_instance_type="ml.g5.xlarge",
         max_seq_length=4096,
-    ),
-    "mistral-7b-v0.3": BaseModelSpec(
-        hf_model_id="mistralai/Mistral-7B-v0.3",
-        display_name="Mistral 7B v0.3",
-        default_instance_type="ml.g5.2xlarge",
-        max_seq_length=8192,
     ),
 }
 
@@ -44,7 +44,7 @@ def list_base_models() -> List[dict]:
         {
             "model_key": key,
             "display_name": spec.display_name,
-            "hf_model_id": spec.hf_model_id,
+            "jumpstart_model_id": spec.jumpstart_model_id,
             "supported_methods": spec.supported_methods,
             "default_instance_type": spec.default_instance_type,
             "max_seq_length": spec.max_seq_length,

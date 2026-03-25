@@ -5,7 +5,6 @@ from enum import Enum
 
 class FinetuneMethod(str, Enum):
     sft = "sft"
-    dpo = "dpo"
 
 
 class HyperParameters(BaseModel):
@@ -15,7 +14,6 @@ class HyperParameters(BaseModel):
     max_seq_length: Optional[int] = None
     lora_r: int = Field(default=16, ge=4, le=128)
     lora_alpha: int = Field(default=32, ge=4, le=256)
-    beta: float = Field(default=0.1, ge=0.01, le=1.0, description="DPO temperature (only for DPO)")
 
 
 class FinetuneRequest(BaseModel):
